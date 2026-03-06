@@ -1,1 +1,22 @@
-[5843195544, 1149155009]
+{
+  "5843195544": {
+    "language": "kk",
+    "search": {
+      "kind": "local_genre",
+      "value": "fantasy",
+      "offset": 4
+    }
+  },
+  "1149155009": {
+    "language": null,
+    "search": null
+  },
+  "2043356989": {
+    "language": "kk",
+    "search": {
+      "kind": "local_genre",
+      "value": "self_development",
+      "offset": 4
+    }
+  }
+}

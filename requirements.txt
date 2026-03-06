@@ -1,3 +1,2 @@
-aiogram
-openai
-python-dotenv
+aiogram==3.26.0
+python-dotenv>=1.0,<2.0
