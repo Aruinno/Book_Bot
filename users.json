@@ -12,11 +12,11 @@
     "search": null
   },
   "2043356989": {
-    "language": "kk",
+    "language": "en",
     "search": {
       "kind": "local_genre",
-      "value": "self_development",
-      "offset": 4
+      "value": "detective",
+      "offset": 8
     }
   }
 }
