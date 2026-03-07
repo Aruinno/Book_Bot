@@ -1,10 +1,10 @@
 {
   "5843195544": {
-    "language": "kk",
+    "language": "ru",
     "search": {
-      "kind": "local_genre",
-      "value": "fantasy",
-      "offset": 4
+      "kind": "open_library",
+      "value": "Гитлер",
+      "offset": 3
     }
   },
   "1149155009": {
@@ -12,11 +12,11 @@
     "search": null
   },
   "2043356989": {
-    "language": "en",
+    "language": "kk",
     "search": {
       "kind": "local_genre",
-      "value": "detective",
-      "offset": 8
+      "value": "business",
+      "offset": 4
     }
   }
 }

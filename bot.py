@@ -38,6 +38,11 @@ OPEN_LIBRARY_LANGUAGE_CODES = {
     "ru": "rus",
     "en": "eng",
 }
+OPEN_LIBRARY_TO_APP_LANGUAGE = {
+    "kaz": "kk",
+    "rus": "ru",
+    "eng": "en",
+}
 
 LEGACY_GENRE_MAP = {
     "fantasy books": "fantasy",
@@ -264,6 +269,25 @@ CHANGE_LANGUAGE_ALIASES = {
 
 router = Router()
 cover_cache: dict[str, str | None] = {}
+CYRILLIC_RE = re.compile(r"[А-Яа-яЁёӘәҒғҚқҢңӨөҰұҮүІі]")
+KAZAKH_SPECIFIC_RE = re.compile(r"[ӘәҒғҚқҢңӨөҰұҮүІі]")
+KAZAKH_LATIN_MARKERS = (
+    "qazaq",
+    "qazaqstan",
+    "kazakh",
+    "kazakhstan",
+    "mahabbat",
+    "adebiet",
+    "psikholog",
+    "isker",
+    "tili",
+    "zhumb",
+    "shytyr",
+    "ertegi",
+    "ghashyq",
+    "qylmys",
+    "jetistik",
+)
 
 
 def normalize_text(value: str) -> str:
@@ -289,6 +313,54 @@ def sanitize_image_url(url: str | None) -> str | None:
     if cleaned.startswith("http://"):
         return "https://" + cleaned[len("http://") :]
     return cleaned
+
+
+def detect_open_library_language(doc: dict[str, Any], requested_language: str) -> str:
+    for code in doc.get("language", []) or []:
+        app_language = OPEN_LIBRARY_TO_APP_LANGUAGE.get(code)
+        if app_language:
+            return app_language
+    return requested_language
+
+
+def text_matches_language(text: str | None, language: str) -> bool:
+    sample = str(text or "").strip()
+    if not sample:
+        return False
+
+    if language == "en":
+        return True
+
+    if language == "ru":
+        return bool(CYRILLIC_RE.search(sample))
+
+    normalized = normalize_text(sample)
+    if KAZAKH_SPECIFIC_RE.search(sample):
+        return True
+    return any(marker in normalized for marker in KAZAKH_LATIN_MARKERS)
+
+
+def title_matches_user_language(title: str | None, language: str) -> bool:
+    return text_matches_language(title, language)
+
+
+def description_matches_user_language(description: str | None, language: str) -> bool:
+    sample = str(description or "").strip()
+    if not sample:
+        return False
+
+    if language == "en":
+        return True
+    if language == "ru":
+        return bool(CYRILLIC_RE.search(sample))
+    return bool(KAZAKH_SPECIFIC_RE.search(sample))
+
+
+def book_matches_user_language(book: dict[str, Any], language: str) -> bool:
+    if book.get("language") != language:
+        return False
+
+    return title_matches_user_language(book.get("title"), language)
 
 
 def language_priority(book_language: str, preferred_language: str) -> int:
@@ -320,9 +392,11 @@ def compute_quality_score(book: dict[str, Any]) -> float:
     if book.get("author"):
         score += 8
     if book.get("image_url"):
-        score += 6
+        score += 18
     if book.get("description"):
         score += 4
+    if book_matches_user_language(book, book.get("language") or ""):
+        score += 12
 
     low_value_markers = (
         "magazine",
@@ -571,7 +645,12 @@ def format_rating(value: float | None, language: str) -> str:
 def format_book_caption(book: dict[str, Any], language: str) -> str:
     texts = TEXTS[language]
     author = book.get("author") or texts["unknown_author"]
-    description = short_text(book.get("description") or texts["no_description"])
+    raw_description = (
+        book.get("description")
+        if description_matches_user_language(book.get("description"), language)
+        else ""
+    )
+    description = short_text(raw_description or texts["no_description"])
     genre_key = book.get("genre_key")
     genre_label = GENRES[genre_key]["labels"][language] if genre_key in GENRES else ""
 
@@ -599,11 +678,15 @@ def format_book_caption(book: dict[str, Any], language: str) -> str:
 
 
 def get_local_books_by_genre(genre_key: str, language: str) -> list[dict[str, Any]]:
-    books = [book for book in BOOKS_CATALOG if book["genre_key"] == genre_key]
+    books = [
+        book
+        for book in BOOKS_CATALOG
+        if book["genre_key"] == genre_key and book_matches_user_language(book, language)
+    ]
     books.sort(
         key=lambda book: (
-            language_priority(book["language"], language),
             book["quality_score"],
+            book.get("rating") or 0,
             book["title"],
         ),
         reverse=True,
@@ -639,12 +722,13 @@ def open_library_to_book(doc: dict[str, Any], language: str, fallback_genre: str
         "title": str(doc.get("title") or doc.get("title_suggest") or "Untitled").strip(),
         "author": ", ".join(doc.get("author_name", [])[:3]).strip(),
         "genre_key": genre_key or "",
-        "language": language,
+        "language": detect_open_library_language(doc, language),
         "description": description,
         "rating": coerce_rating(doc.get("ratings_average")),
         "published": str(doc.get("first_publish_year") or "").strip(),
         "image_url": sanitize_image_url(image_url),
         "info_url": f"https://openlibrary.org{doc['key']}" if doc.get("key") else "",
+        "subjects": [subject for subject in subjects if isinstance(subject, str)],
         "quality_score": 0,
     }
 
@@ -656,6 +740,7 @@ def fetch_open_library_sync(
     limit: int,
     fallback_genre: str | None = None,
     user_language: str = "en",
+    strict_language: bool = True,
 ) -> tuple[list[dict[str, Any]], int]:
     params: dict[str, Any] = {
         "q": query,
@@ -670,11 +755,16 @@ def fetch_open_library_sync(
         payload = json.load(response)
 
     docs = payload.get("docs", [])
-    books = [
-        open_library_to_book(doc, user_language, fallback_genre=fallback_genre)
-        for doc in docs
-        if isinstance(doc, dict)
-    ]
+    books: list[dict[str, Any]] = []
+    for doc in docs:
+        if not isinstance(doc, dict):
+            continue
+
+        book = open_library_to_book(doc, user_language, fallback_genre=fallback_genre)
+        if strict_language and not book_matches_user_language(book, user_language):
+            continue
+        books.append(book)
+
     return dedupe_books(books), int(payload.get("numFound") or len(books))
 
 
@@ -684,13 +774,15 @@ async def search_open_library(
     offset: int = 0,
     limit: int = BOOKS_PER_PAGE,
     fallback_genre: str | None = None,
+    allow_fallback_languages: bool = False,
 ) -> tuple[list[dict[str, Any]], int] | None:
-    attempts = [OPEN_LIBRARY_LANGUAGE_CODES.get(language), None]
-
-    if language == "kk":
-        attempts.extend(["rus", "eng"])
-    elif language == "ru":
-        attempts.append("eng")
+    attempts = [OPEN_LIBRARY_LANGUAGE_CODES.get(language)]
+    if allow_fallback_languages:
+        attempts.append(None)
+        if language == "kk":
+            attempts.extend(["rus", "eng"])
+        elif language == "ru":
+            attempts.append("eng")
 
     last_error: Exception | None = None
     checked: set[str | None] = set()
@@ -709,6 +801,7 @@ async def search_open_library(
                 limit,
                 fallback_genre,
                 language,
+                not allow_fallback_languages,
             )
         except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as error:
             last_error = error
@@ -734,7 +827,13 @@ async def find_cover_for_book(book: dict[str, Any], language: str) -> str | None
         cover_cache[cache_key] = None
         return None
 
-    result = await search_open_library(query, language, offset=0, limit=1)
+    result = await search_open_library(
+        query,
+        language,
+        offset=0,
+        limit=1,
+        allow_fallback_languages=True,
+    )
     if not result:
         cover_cache[cache_key] = None
         return None
